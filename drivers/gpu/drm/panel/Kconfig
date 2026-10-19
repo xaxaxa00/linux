@@ -1156,4 +1156,11 @@ config DRM_PANEL_XINPENG_XPP055C272
 	  Say Y here if you want to enable support for the Xinpeng
 	  XPP055C272 controller for 720x1280 LCD panels with MIPI/RGB/SPI
 	  system interfaces.
+config DRM_PANEL_TIANMA_ICNL9916
+	tristate "Tianma ICNL9916 panel on Motorola penangf"
+	depends on OF && DRM_MIPI_DSI && BACKLIGHT_CLASS_DEVICE
+	depends on GPIOLIB && REGULATOR
+	help
+	  Enable the Tianma ICNL9916 720x1600 DSI panel on penangf.
+
 endmenu
