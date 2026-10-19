@@ -1447,4 +1447,12 @@ config TOUCHSCREEN_HIMAX_HX83112B
 	  To compile this driver as a module, choose M here: the
 	  module will be called himax_hx83112b.
 
+config TOUCHSCREEN_CHIPONE_ICNL9916
+	tristate "Chipone ICNL9916 TCS touchscreen"
+	depends on SPI && OF && GPIOLIB && REGULATOR && DRM_PANEL
+	select FW_LOADER
+	help
+	  Support Chipone ICNL9916 touch controllers using TCS over SPI.
+
+
 endif
