@@ -1,0 +1,22 @@
+[
+  "--header_version",
+  "2",
+  "--pagesize",
+  "0x00001000",
+  "--base",
+  "0x00000000",
+  "--kernel_offset",
+  "0x40080000",
+  "--ramdisk_offset",
+  "0x47c80000",
+  "--second_offset",
+  "0x00000000",
+  "--tags_offset",
+  "0x4bc80000",
+  "--dtb_offset",
+  "0x000000004bc80000",
+  "--board",
+  "",
+  "--cmdline",
+  "bootopt=64S3,32N2,64N2 rdinit=/init loglevel=8 ignore_loglevel clk_ignore_unused regulator_ignore_unused panic=0 ramoops.record_size=0x10000 console=tty0 consoleblank=0"
+]

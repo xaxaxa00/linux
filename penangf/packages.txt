@@ -1,0 +1,14 @@
+weston
+weston-terminal
+weston-backend-drm
+weston-shell-desktop
+weston-clients
+seatd
+eudev
+libinput
+mesa-dri-gallium
+mesa-egl
+mesa-gles
+mesa-utils
+font-dejavu
+fastfetch

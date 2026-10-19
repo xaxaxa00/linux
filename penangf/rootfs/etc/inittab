@@ -1,0 +1,7 @@
+::sysinit:/etc/penangf/startup.sh
+::respawn:/usr/local/sbin/busybox telnetd -F -b 192.168.77.1 -l /bin/sh
+::respawn:/usr/local/sbin/busybox httpd -f -p 192.168.77.1:80 -h /www
+::respawn:/etc/penangf/desktop-service.sh
+::ctrlaltdel:/sbin/reboot
+::shutdown:/bin/sync
+::shutdown:/bin/umount -a -r

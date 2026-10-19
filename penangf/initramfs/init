@@ -1,0 +1,98 @@
+#!/bin/sh
+export PATH=/bin HOME=/root TERM=linux PS1='penangf# '
+/bin/busybox --install -s /bin
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t tmpfs tmpfs /tmp
+mkdir -p /dev/pts /sys/kernel/config /newroot
+mount -t devpts -o newinstance,ptmxmode=0666,mode=0620 devpts /dev/pts
+ln -sf pts/ptmx /dev/ptmx
+mount -t configfs configfs /sys/kernel/config
+rescue() {
+ echo "PENANGF ROOTFS RESCUE: $*" > /dev/kmsg
+ echo "PENANGF ROOTFS RESCUE: $*" > /dev/console
+ telnetd -F -b 192.168.77.1 -l /bin/sh &
+ httpd -f -p 192.168.77.1:80 -h /www &
+ while :; do sleep 60; done
+}
+(
+set -e
+    G=/sys/kernel/config/usb_gadget/penangf_net
+    mkdir -p "$G"
+    cd "$G"
+
+    echo 0x1d6b > idVendor
+    echo 0x0104 > idProduct
+    echo 0x0200 > bcdUSB
+    mkdir -p strings/0x409
+    echo penangf-net > strings/0x409/serialnumber
+    echo Linux > strings/0x409/manufacturer
+    echo "penangf USB network" > strings/0x409/product
+
+    mkdir -p configs/c.1/strings/0x409
+    echo "USB ECM" > configs/c.1/strings/0x409/configuration
+    echo 250 > configs/c.1/MaxPower
+    mkdir -p functions/ecm.usb0
+    echo 02:00:00:00:68:01 > functions/ecm.usb0/dev_addr
+    echo 02:00:00:00:68:02 > functions/ecm.usb0/host_addr
+    ln -s functions/ecm.usb0 configs/c.1/ecm.usb0
+
+    while :; do
+        UDC=""
+        for p in /sys/class/udc/*; do
+            [ -e "$p" ] || continue
+            UDC="${p##*/}"
+            break
+        done
+        [ -n "$UDC" ] && break
+        sleep 1
+    done
+    echo "$UDC" > UDC
+
+    while [ ! -d /sys/class/net/usb0 ]; do sleep 1; done
+    ifconfig lo up
+    ifconfig usb0 192.168.77.1 netmask 255.255.255.0 up
+
+    echo "<6>PENANGF BOOT: USB network ready at 192.168.77.1" > /dev/kmsg
+
+) || rescue "USB setup failed"
+
+cd /
+/bin/sh /display-autostart.sh > /tmp/display-autostart.log 2>&1 || rescue 'display startup failed'
+insmod /lib/modules/$(uname -r)/chipone_icnl9916.ko || rescue 'touch module load failed'
+ROOTDEV=""
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+ ROOTDEV=""
+ for part in /sys/class/block/*/uevent; do
+  [ -f "$part" ] || continue
+  if grep -qx 'PARTNAME=userdata' "$part"; then
+   [ -z "$ROOTDEV" ] || rescue 'multiple userdata partitions found'
+   devname="$(sed -n 's/^DEVNAME=//p' "$part")"
+   [ -n "$devname" ] || rescue 'userdata device name missing'
+   ROOTDEV="/dev/$devname"
+  fi
+ done
+ [ -n "$ROOTDEV" ] && [ -b "$ROOTDEV" ] && break
+ sleep 1
+done
+[ -n "$ROOTDEV" ] && [ -b "$ROOTDEV" ] || rescue 'userdata partition not found'
+ROOTINFO="$(blkid "$ROOTDEV")" || rescue 'cannot identify userdata filesystem'
+printf '%s\n' "$ROOTINFO" | grep -q ' UUID="aa092c4f-72a7-44e4-bbfe-4e20b1462e4c"' || rescue 'filesystem UUID mismatch'
+printf '%s\n' "$ROOTINFO" | grep -q ' TYPE="ext4"' || rescue 'userdata filesystem is not ext4'
+mount -t ext4 -o rw,noatime "$ROOTDEV" /newroot || rescue 'cannot mount rootfs'
+[ -x /newroot/sbin/init ] || rescue 'missing root init'
+mkdir -p /newroot/dev /newroot/proc /newroot/sys /newroot/run /newroot/var/log
+mkdir -p /newroot/usr/local/sbin
+cp /bin/busybox /newroot/usr/local/sbin/busybox
+sed -i s,bringup-busybox,busybox,g /newroot/etc/inittab
+sync
+cp /tmp/display-autostart.log /newroot/var/log/early-display.log
+echo N > /sys/module/printk/parameters/ignore_loglevel
+dmesg -n 5
+export PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+exec > /dev/console 2>&1
+mount --move /dev /newroot/dev || rescue 'move dev failed'
+mount --move /sys /newroot/sys || rescue 'move sys failed'
+mount --move /proc /newroot/proc || rescue 'move proc failed'
+exec /bin/busybox switch_root -c /dev/console /newroot /sbin/init
