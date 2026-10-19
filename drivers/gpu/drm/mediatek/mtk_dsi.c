@@ -193,6 +193,7 @@ struct mtk_dsi_driver_data {
 	bool has_size_ctl;
 	bool cmdq_long_packet_ctl;
 	bool support_per_frame_lp;
+	bool mt6768_hblank;
 };
 
 struct mtk_dsi {
@@ -211,6 +212,7 @@ struct mtk_dsi {
 	struct clk *hs_clk;
 
 	u32 data_rate;
+	unsigned long hs_rate;
 
 	unsigned long mode_flags;
 	enum mipi_dsi_pixel_format format;
@@ -220,6 +222,7 @@ struct mtk_dsi {
 	int refcount;
 	bool enabled;
 	bool lanes_ready;
+	int irq;
 	u32 irq_data;
 	wait_queue_head_t irq_wait_queue;
 	const struct mtk_dsi_driver_data *driver_data;
@@ -563,6 +566,27 @@ static void mtk_dsi_config_vdo_timing_per_line_lp(struct mtk_dsi *dsi)
 	writel(horizontal_frontporch_byte, dsi->regs + DSI_HFP_WC);
 }
 
+/* MT6768 uses aligned packet lengths without subtracting D-PHY cycles. */
+static void mtk_dsi_config_vdo_timing_mt6768(struct mtk_dsi *dsi)
+{
+	const struct videomode *vm = &dsi->vm;
+	u32 bpp = dsi->format == MIPI_DSI_FMT_RGB565 ? 2 : 3;
+	u32 hsa, hbp, hfp;
+
+	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO_SYNC_PULSE) {
+		hsa = roundup(vm->hsync_len * bpp - 10, 4);
+		hbp = roundup(vm->hback_porch * bpp - 10, 4);
+	} else {
+		hsa = roundup(vm->hsync_len * bpp - 4, 4);
+		hbp = roundup((vm->hback_porch + vm->hsync_len) * bpp - 10, 4);
+	}
+	hfp = roundup(vm->hfront_porch * bpp - 12, 4);
+
+	writel(hsa, dsi->regs + DSI_HSA_WC);
+	writel(hbp, dsi->regs + DSI_HBP_WC);
+	writel(hfp, dsi->regs + DSI_HFP_WC);
+}
+
 static void mtk_dsi_config_vdo_timing(struct mtk_dsi *dsi)
 {
 	struct videomode *vm = &dsi->vm;
@@ -577,7 +601,9 @@ static void mtk_dsi_config_vdo_timing(struct mtk_dsi *dsi)
 			FIELD_PREP(DSI_WIDTH, vm->hactive),
 			dsi->regs + DSI_SIZE_CON);
 
-	if (dsi->driver_data->support_per_frame_lp)
+	if (dsi->driver_data->mt6768_hblank)
+		mtk_dsi_config_vdo_timing_mt6768(dsi);
+	else if (dsi->driver_data->support_per_frame_lp)
 		mtk_dsi_config_vdo_timing_per_frame_lp(dsi);
 	else
 		mtk_dsi_config_vdo_timing_per_line_lp(dsi);
@@ -691,6 +717,15 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 	dsi->data_rate = DIV_ROUND_UP_ULL(dsi->vm.pixelclock * bit_per_pixel,
 					  dsi->lanes);
 
+	/* Burst-mode panels may specify a fixed high-speed lane clock. */
+	if (dsi->hs_rate && (dsi->mode_flags & MIPI_DSI_MODE_VIDEO_BURST)) {
+		if (dsi->hs_rate < dsi->data_rate || dsi->hs_rate > U32_MAX) {
+			ret = -EINVAL;
+			goto err_refcount;
+		}
+		dsi->data_rate = dsi->hs_rate;
+	}
+
 	ret = clk_set_rate(dsi->hs_clk, dsi->data_rate);
 	if (ret < 0) {
 		dev_err(dev, "Failed to set data rate: %d\n", ret);
@@ -717,13 +752,19 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 		writel(FORCE_COMMIT | BYPASS_SHADOW,
 		       dsi->regs + dsi->driver_data->reg_shadow_dbg_off);
 
+	/* Start panel preparation in command mode, not firmware video mode. */
+	writel(0, dsi->regs + DSI_START);
 	mtk_dsi_reset_engine(dsi);
+	writel(CMD_MODE, dsi->regs + DSI_MODE_CTRL);
 	mtk_dsi_phy_timconfig(dsi);
 
 	mtk_dsi_ps_control(dsi, true);
 	mtk_dsi_set_vm_cmd(dsi);
 	mtk_dsi_config_vdo_timing(dsi);
+	/* Discard firmware status before allowing the initialized controller IRQ. */
+	writel(0, dsi->regs + DSI_INTSTA);
 	mtk_dsi_set_interrupt_enable(dsi);
+	enable_irq(dsi->irq);
 
 	return 0;
 err_disable_engine_clk:
@@ -759,6 +800,9 @@ static void mtk_dsi_poweroff(struct mtk_dsi *dsi)
 	/* set the lane number as 0 to pull down mipi */
 	writel(0, dsi->regs + DSI_TXRX_CTRL);
 
+	/* No handler may touch registers after their clocks have been gated. */
+	writel(0, dsi->regs + DSI_INTEN);
+	disable_irq(dsi->irq);
 	mtk_dsi_disable(dsi);
 
 	clk_disable_unprepare(dsi->engine_clk);
@@ -990,6 +1034,7 @@ static int mtk_dsi_host_attach(struct mipi_dsi_host *host,
 	dsi->lanes = device->lanes;
 	dsi->format = device->format;
 	dsi->mode_flags = device->mode_flags;
+	dsi->hs_rate = device->hs_rate;
 	dsi->next_bridge = devm_drm_of_get_bridge(dev, dev->of_node, 1, 0);
 	if (IS_ERR(dsi->next_bridge)) {
 		ret = PTR_ERR(dsi->next_bridge);
@@ -1236,12 +1281,15 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 	if (irq_num < 0)
 		return irq_num;
 
+	dsi->irq = irq_num;
+	init_waitqueue_head(&dsi->irq_wait_queue);
+
+	/* Firmware can leave video running with pending DSI interrupts. */
 	ret = devm_request_irq(&pdev->dev, irq_num, mtk_dsi_irq,
-			       IRQF_TRIGGER_NONE, dev_name(&pdev->dev), dsi);
+			       IRQF_TRIGGER_NONE | IRQF_NO_AUTOEN,
+			       dev_name(&pdev->dev), dsi);
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret, "Failed to request DSI irq\n");
-
-	init_waitqueue_head(&dsi->irq_wait_queue);
 
 	platform_set_drvdata(pdev, dsi);
 
@@ -1278,6 +1326,15 @@ static const struct mtk_dsi_driver_data mt2701_dsi_driver_data = {
 	.reg_shadow_dbg_off = 0x190
 };
 
+static const struct mtk_dsi_driver_data mt6768_dsi_driver_data = {
+	.reg_cmdq_off = 0x200,
+	.reg_vm_cmd_off = 0x130,
+	.reg_shadow_dbg_off = 0x190,
+	.has_shadow_ctl = true,
+	.has_size_ctl = true,
+	.mt6768_hblank = true,
+};
+
 static const struct mtk_dsi_driver_data mt8183_dsi_driver_data = {
 	.reg_cmdq_off = 0x200,
 	.reg_vm_cmd_off = 0x130,
@@ -1307,6 +1364,7 @@ static const struct mtk_dsi_driver_data mt8188_dsi_driver_data = {
 static const struct of_device_id mtk_dsi_of_match[] = {
 	{ .compatible = "mediatek,mt2701-dsi", .data = &mt2701_dsi_driver_data },
 	{ .compatible = "mediatek,mt8173-dsi", .data = &mt8173_dsi_driver_data },
+	{ .compatible = "mediatek,mt6768-dsi", .data = &mt6768_dsi_driver_data },
 	{ .compatible = "mediatek,mt8183-dsi", .data = &mt8183_dsi_driver_data },
 	{ .compatible = "mediatek,mt8186-dsi", .data = &mt8186_dsi_driver_data },
 	{ .compatible = "mediatek,mt8188-dsi", .data = &mt8188_dsi_driver_data },
