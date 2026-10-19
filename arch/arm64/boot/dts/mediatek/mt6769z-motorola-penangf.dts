@@ -320,3 +320,84 @@
 &usb2phy {
 	status = "okay";
 };
+
+/* USB ECM remains peripheral; host/OTG support is a separate task. */
+&usb2 {
+	dr_mode = "peripheral";
+	/delete-property/ usb-role-switch;
+};
+
+
+/ {
+	/* GPIO-controlled bias enables, matching the stock prepare path.
+	 * No voltage programming is claimed for the unidentified bias IC.
+	 */
+	panel_avdd: regulator-panel-avdd {
+		compatible = "regulator-fixed";
+		regulator-name = "panel-avdd";
+		gpio = <&pio 169 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+	};
+
+	panel_avee: regulator-panel-avee {
+		compatible = "regulator-fixed";
+		regulator-name = "panel-avee";
+		gpio = <&pio 165 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+	};
+};
+
+&panel {
+	compatible = "tianma,icnl9916-penangf";
+	/delete-property/ power-supply;
+	avdd-supply = <&panel_avdd>;
+	avee-supply = <&panel_avee>;
+	reset-gpios = <&pio 45 GPIO_ACTIVE_LOW>;
+};
+
+#include <dt-bindings/pinctrl/mediatek,mt6768-pinfunc.h>
+
+&pio {
+	touch_spi_pins: touch-spi-pins {
+		pins {
+			pinmux = <PINMUX_GPIO25__FUNC_SPI2_CSB>,
+				 <PINMUX_GPIO26__FUNC_SPI2_MO>,
+				 <PINMUX_GPIO27__FUNC_SPI2_CLK>,
+				 <PINMUX_GPIO28__FUNC_SPI2_MI>;
+			bias-disable;
+		};
+	};
+
+	touch_control_pins: touch-control-pins {
+		pins {
+			pinmux = <PINMUX_GPIO1__FUNC_GPIO1>,
+				 <PINMUX_GPIO92__FUNC_GPIO92>;
+			bias-disable;
+		};
+	};
+};
+
+&spi2 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&touch_spi_pins>;
+	mediatek,pad-select = <0>;
+
+	/* Stock's three candidate drivers share the same physical CS/pad. */
+	touchscreen@0 {
+		compatible = "chipone,icnl9916";
+		reg = <0>;
+		panel = <&panel>;
+		spi-max-frequency = <6000000>;
+		interrupt-parent = <&pio>;
+		interrupts = <1 IRQ_TYPE_EDGE_FALLING>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&touch_control_pins>;
+		reset-gpios = <&pio 92 GPIO_ACTIVE_LOW>;
+		vdd-supply = <&mt6358_vldo28_reg>;
+		touchscreen-size-x = <720>;
+		touchscreen-size-y = <1600>;
+	};
+};
