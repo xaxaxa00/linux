@@ -261,6 +261,10 @@ void mtk_ovl_start(struct device *dev)
 {
 	struct mtk_disp_ovl *ovl = dev_get_drvdata(dev);
 
+	/* Drop firmware IRQ enables; the CRTC enables its vblank source later. */
+	writel(0, ovl->regs + DISP_REG_OVL_INTEN);
+	writel(0, ovl->regs + DISP_REG_OVL_INTSTA);
+
 	if (ovl->data->smi_id_en) {
 		unsigned int reg;
 
@@ -274,6 +278,8 @@ void mtk_ovl_start(struct device *dev)
 void mtk_ovl_stop(struct device *dev)
 {
 	struct mtk_disp_ovl *ovl = dev_get_drvdata(dev);
+
+	writel(0, ovl->regs + DISP_REG_OVL_INTEN);
 
 	writel_relaxed(0x0, ovl->regs + DISP_REG_OVL_EN);
 	if (ovl->data->smi_id_en) {
